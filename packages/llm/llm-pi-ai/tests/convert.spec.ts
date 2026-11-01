@@ -998,6 +998,35 @@ describe('mapStopReason / mapUsage', () => {
     })
     expect(mapUsage(usage(10, 5))).toEqual({ inputTokens: 10, outputTokens: 5, totalTokens: 15 })
   })
+
+  it.each([3, 0, undefined])('preserves reported reasoning usage %s without changing totals', (reasoning) => {
+    const reported = usage(10, 5, 8, 2)
+    if (reasoning !== undefined) reported.reasoning = reasoning
+    expect(mapUsage(reported)).toStrictEqual({
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 25,
+      cacheReadTokens: 8,
+      cacheWriteTokens: 2,
+      ...reasoning === undefined ? {} : { reasoningTokens: reasoning },
+    })
+  })
+
+  it.each(['done', 'error'] as const)('preserves reported reasoning usage in %s events', async (type) => {
+    const message = assistant({
+      content: [{ type: 'text', text: 'partial' }],
+      usage: { ...usage(10, 5), reasoning: 3 },
+      ...type === 'error' ? { stopReason: 'error' as const, errorMessage: 'connection reset' } : {},
+    })
+    const event: AssistantMessageEvent = type === 'done'
+      ? { type, reason: 'stop', message }
+      : { type, reason: 'error', error: message }
+    const chunks = await collect(toStreamChunks(feed(event)))
+    expect(chunks.find(chunk => chunk.type === 'usage')).toStrictEqual({
+      type: 'usage',
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, reasoningTokens: 3 },
+    })
+  })
 })
 
 describe('toStreamChunks edge branches', () => {
