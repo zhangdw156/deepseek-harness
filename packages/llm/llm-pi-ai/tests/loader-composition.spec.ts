@@ -15,7 +15,7 @@ import LocalCredentialProvider from '@deepseek-ai/dsh-credentials-local'
 import { profileComposition } from '../../../settings/settings/tests/profile-composition.ts'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import { assemble } from './assemble.ts'
-import { closeMockServers, mockServer, textEvents } from './mock-server.ts'
+import { anthropicFrame, anthropicTextEvents, closeMockServers, mockServer, textEvents } from './mock-server.ts'
 
 /** One text block, then a tool call truncated by the output-token ceiling. */
 const truncatedToolCallEvents = [
@@ -88,6 +88,37 @@ async function loadComposition(): Promise<{ ctx: Context; settingsPath: string }
 }
 
 describe('llm-pi-ai real dormant composition', () => {
+  it.each([6, 0, undefined])('preserves reported reasoning usage %s through the Anthropic route', async (reasoning) => {
+    const server = await mockServer([{ events: [
+      ...anthropicTextEvents.slice(0, -2),
+      anthropicFrame({
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn', stop_sequence: null },
+        usage: {
+          output_tokens: 10,
+          ...reasoning === undefined ? {} : { output_tokens_details: { thinking_tokens: reasoning } },
+        },
+      }),
+      anthropicFrame({ type: 'message_stop' }),
+    ] }])
+    const { ctx, settingsPath } = await loadComposition()
+    await writeFile(settingsPath, [
+      '- id: llm-pi-ai', '  config:', '    providers:', '      anthropic:',
+      '        apiKeyEnv: PI_COMPOSITION_KEY', `        baseURL: ${server.url}`, '',
+    ].join('\n'))
+    await vi.waitFor(() => {
+      expect(ctx.llm.listProviders().map(provider => provider.id)).toEqual(['anthropic'])
+    }, { timeout: 5000 })
+    const result = await assemble(ctx, { provider: 'anthropic', model: 'claude-sonnet-4-6', messages: [] })
+    expect(result.finish).toEqual({ kind: 'stop' })
+    expect(result.usage).toStrictEqual({
+      inputTokens: 3,
+      outputTokens: 10,
+      totalTokens: 13,
+      ...reasoning === undefined ? {} : { reasoningTokens: reasoning },
+    })
+  })
+
   it('dispatches header contributors through the Loader-mounted adapter', async () => {
     const server = await mockServer([{ events: textEvents }])
     const { ctx, settingsPath } = await loadComposition()
